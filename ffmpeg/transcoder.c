@@ -298,7 +298,7 @@ transcode_cleanup:
       avio_closep(&ictx->ic->pb);
     }
   }
-  for (int j=0; j < dfcount; j++){
+  for (int j=0; j < 1000; j++){
     if (dframe[j].dec_frame) av_frame_free(&(dframe[j].dec_frame));
   }
   ictx->flushed = 0;
