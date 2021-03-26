@@ -35,14 +35,27 @@ typedef struct {
 } output_params;
 
 typedef struct {
-  char *fname;
+  AVFrame *dec_frame;
+  int has_frame;
+  AVPacket in_pkt;
+} dframemeta;
 
+typedef struct {
+    int cnt;
+    dframemeta *dframes;
+} dframe_buffer;
+
+typedef struct {
+  char *fname;
+  dframe_buffer *dframe_buffer;
   // Handle to a transcode thread.
   // If null, a new transcode thread is allocated.
   // The transcode thread is returned within `output_results`.
   // Must be freed with lpms_transcode_stop.
   struct transcode_thread *handle;
 
+  // temporary addition of decode handler, revisit and clean after functional
+  struct decode_thread *dec_handle; 
   // Optional hardware acceleration
   enum AVHWDeviceType hw_type;
   char *device;
@@ -69,5 +82,12 @@ void lpms_init(enum LPMSLogLevel max_level);
 int  lpms_transcode(input_params *inp, output_params *params, output_results *results, int nb_outputs, output_results *decoded_results);
 struct transcode_thread* lpms_transcode_new();
 void lpms_transcode_stop(struct transcode_thread* handle);
+int lpms_encode(input_params *inp, dframe_buffer *dframe_buffer, output_params *params,
+  output_results *results, int nb_outputs, output_results *decoded_results);
 
+struct decode_thread* lpms_decode_new();
+void lpms_decode_stop(struct decode_thread* handle);
+// int lpms_decode(input_params *inp,  output_results *decoded_results, dframe_buffer *dframe_buf, struct input_ctx *ictx);
+
+// void set_ictx(struct input_ctx *ictx, struct transcode_thread *h);
 #endif // _LPMS_TRANSCODER_H_
