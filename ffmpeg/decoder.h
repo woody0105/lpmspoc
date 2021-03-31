@@ -36,13 +36,13 @@ struct input_ctx {
   AVFrame *last_frame_v, *last_frame_a;
 };
 
-struct decode_thread {
-  int initialized;
-  int gpuid;
-  int chunkcnt;
-  struct input_ctx ictx;
-  struct dframemeta *dec_chunk[MAX_CHUNK_CNT]; 
-};
+// struct decode_thread {
+//   int initialized;
+//   int gpuid;
+//   int chunkcnt;
+//   struct input_ctx ictx;
+//   struct dframemeta *dec_chunk[MAX_CHUNK_CNT]; 
+// };
 
 struct decode_thread* lpms_decode_new();
 void lpms_decode_stop(struct decode_thread* handle);
@@ -57,11 +57,10 @@ int open_audio_decoder(input_params *params, struct input_ctx *ctx);
 void free_input(struct input_ctx *inctx);
 
 int lpms_decode(input_params *inp,  output_results *decoded_results, dframe_buffer *dframe_buf, struct input_ctx *ictx);
-void set_ictx(struct input_ctx *ictx, struct transcode_thread *h);
 // Utility functions
 inline int is_flush_frame(AVFrame *frame)
 {
   return -1 == frame->pts;
 }
-
+// void set_ictx(input_ctx *ictx, struct transcode_thread *h);
 #endif // _LPMS_DECODER_H_

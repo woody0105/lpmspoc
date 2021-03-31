@@ -59,7 +59,7 @@ type EncodeOptionsIn struct {
 	DframeBuf DframeBuffer
 	Accel     Acceleration
 	Device    string
-	// Dec_thread *C.struct_decode_thread
+	DecHandle *C.struct_transcode_thread
 	Ictx *C.struct_input_ctx
 }
 
@@ -88,10 +88,11 @@ type DecodeResults struct {
 	Decoded   MediaInfo
 	DframeBuf DframeBuffer
 	Ictx      *C.struct_input_ctx
+	DecHandle *C.struct_transcode_thread
 }
 
 type Decoder struct {
-	handle  *C.struct_decode_thread
+	handle  *C.struct_transcode_thread
 	stopped bool
 	started bool
 	mu      *sync.Mutex
@@ -461,19 +462,20 @@ func (t *Decoder) Decode(input *TranscodeOptionsIn) (*DecodeResults, error) {
 	// 	paramsPointer = (*C.output_params)(&params[0])
 	// 	resultsPointer = (*C.output_results)(&results[0])
 	// }
+	// ret := int(C.lpms_decode(inp, decoded, dframe_buffer))
 	ictx := &C.struct_input_ctx{}
 	ret := int(C.lpms_decode(inp, decoded, dframe_buffer, ictx))
 	if 0 != ret {
 		glog.Error("Transcoder Return : ", ErrorMap[ret])
 		return nil, ErrorMap[ret]
 	}
-	// ictx := C.struct_input_ctx{}
-	// ictx := t.handle.ictx
+
 	dec := MediaInfo{
 		Frames: int(decoded.frames),
 		Pixels: int64(decoded.pixels),
 	}
-	return &DecodeResults{Decoded: dec, DframeBuf: DframeBuffer{Dframebuffer: dframe_buffer}, Ictx: ictx}, nil
+	C.print_tthread(t.handle)
+	return &DecodeResults{Decoded: dec, DframeBuf: DframeBuffer{Dframebuffer: dframe_buffer}, DecHandle: t.handle}, nil
 }
 
 func NewTranscoder() *Transcoder {
@@ -503,7 +505,8 @@ func Decode(input *TranscodeOptionsIn) (*DecodeResults, error) {
 
 func NewDecoder() *Decoder {
 	return &Decoder{
-		handle: C.lpms_decode_new(),
+		// handle: C.lpms_decode_new(),
+		handle: C.lpms_transcode_new(),
 		mu:     &sync.Mutex{},
 	}
 }
@@ -514,7 +517,8 @@ func (d *Decoder) StopDecoder() {
 	if d.stopped {
 		return
 	}
-	C.lpms_decode_stop(d.handle)
+	// C.lpms_decode_stop(d.handle)
+	C.lpms_transcode_stop(d.handle)
 	d.handle = nil // prevent accidental reuse
 	d.stopped = true
 }
@@ -570,7 +574,10 @@ func (t *Encoder) Encode(input *EncodeOptionsIn, ps []TranscodeOptions) (*Transc
 			return nil, errors.New("No video parameters found while initializing stream")
 		}
 	}
-	C.set_ictx(input.Ictx, t.handle)
+	// C.set_ictx(input.DecHandle.ictx, t.handle) //uncomment it
+	C.print_tthread(input.DecHandle)
+	// t.handle = input.DecHandle
+	// fmt.Println(input.DecHandle)
 	params := make([]C.output_params, len(ps))
 	for i, p := range ps {
 		oname := C.CString(p.Oname)
@@ -726,7 +733,7 @@ func (t *Encoder) Encode(input *EncodeOptionsIn, ps []TranscodeOptions) (*Transc
 	}
 
 	inp := &C.input_params{fname: fname, hw_type: hw_type, device: device,
-		handle: t.handle}
+		handle: t.handle, dec_handle: input.DecHandle}
 	results := make([]C.output_results, len(ps))
 	decoded := &C.output_results{}
 	var (
