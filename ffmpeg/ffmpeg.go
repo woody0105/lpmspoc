@@ -61,6 +61,7 @@ type EncodeOptionsIn struct {
 	Device    string
 	DecHandle *C.struct_transcode_thread
 	Ictx *C.struct_input_ctx
+	Dmeta     *C.struct_decode_meta
 }
 
 type TranscodeOptions struct {
@@ -89,6 +90,7 @@ type DecodeResults struct {
 	DframeBuf DframeBuffer
 	Ictx      *C.struct_input_ctx
 	DecHandle *C.struct_transcode_thread
+	Dmeta     *C.struct_decode_meta
 }
 
 type Decoder struct {
@@ -454,17 +456,11 @@ func (t *Decoder) Decode(input *TranscodeOptionsIn) (*DecodeResults, error) {
 	// results := make([]C.output_results, len(ps))
 	decoded := &C.output_results{}
 	dframe_buffer := &C.dframe_buffer{}
-	// var (
-	// 	paramsPointer  *C.output_params
-	// 	resultsPointer *C.output_results
-	// )
-	// if len(params) > 0 {
-	// 	paramsPointer = (*C.output_params)(&params[0])
-	// 	resultsPointer = (*C.output_results)(&results[0])
-	// }
-	// ret := int(C.lpms_decode(inp, decoded, dframe_buffer))
+
 	ictx := &C.struct_input_ctx{}
-	ret := int(C.lpms_decode(inp, decoded, dframe_buffer, ictx))
+	// decode_meta := C.alloc_decode_meta()
+	decode_meta := &C.struct_decode_meta{}
+	ret := int(C.lpms_decode(inp, decoded, dframe_buffer, ictx, decode_meta))
 	if 0 != ret {
 		glog.Error("Transcoder Return : ", ErrorMap[ret])
 		return nil, ErrorMap[ret]
@@ -474,8 +470,7 @@ func (t *Decoder) Decode(input *TranscodeOptionsIn) (*DecodeResults, error) {
 		Frames: int(decoded.frames),
 		Pixels: int64(decoded.pixels),
 	}
-	C.print_tthread(t.handle)
-	return &DecodeResults{Decoded: dec, DframeBuf: DframeBuffer{Dframebuffer: dframe_buffer}, DecHandle: t.handle}, nil
+	return &DecodeResults{Decoded: dec, DframeBuf: DframeBuffer{Dframebuffer: dframe_buffer}, Ictx: ictx, DecHandle: t.handle, Dmeta: decode_meta}, nil
 }
 
 func NewTranscoder() *Transcoder {
@@ -561,7 +556,6 @@ func (t *Encoder) Encode(input *EncodeOptionsIn, ps []TranscodeOptions) (*Transc
 	if err != nil {
 		return nil, err
 	}
-	// &t.handle.struct_ictx = input.Ictx
 	fname := C.CString(input.Fname)
 	defer C.free(unsafe.Pointer(fname))
 	if !t.started {
@@ -574,10 +568,6 @@ func (t *Encoder) Encode(input *EncodeOptionsIn, ps []TranscodeOptions) (*Transc
 			return nil, errors.New("No video parameters found while initializing stream")
 		}
 	}
-	// C.set_ictx(input.DecHandle.ictx, t.handle) //uncomment it
-	C.print_tthread(input.DecHandle)
-	// t.handle = input.DecHandle
-	// fmt.Println(input.DecHandle)
 	params := make([]C.output_params, len(ps))
 	for i, p := range ps {
 		oname := C.CString(p.Oname)
@@ -733,7 +723,7 @@ func (t *Encoder) Encode(input *EncodeOptionsIn, ps []TranscodeOptions) (*Transc
 	}
 
 	inp := &C.input_params{fname: fname, hw_type: hw_type, device: device,
-		handle: t.handle, dec_handle: input.DecHandle}
+		handle: t.handle}
 	results := make([]C.output_results, len(ps))
 	decoded := &C.output_results{}
 	var (
@@ -744,7 +734,7 @@ func (t *Encoder) Encode(input *EncodeOptionsIn, ps []TranscodeOptions) (*Transc
 		paramsPointer = (*C.output_params)(&params[0])
 		resultsPointer = (*C.output_results)(&results[0])
 	}
-	ret := int(C.lpms_encode(inp, input.DframeBuf.Dframebuffer, paramsPointer, resultsPointer, C.int(len(params)), decoded))
+	ret := int(C.lpms_encode1(inp, input.DframeBuf.Dframebuffer, paramsPointer, resultsPointer, C.int(len(params)), decoded, input.Dmeta))
 	if 0 != ret {
 		glog.Error("Transcoder Return : ", ErrorMap[ret])
 		return nil, ErrorMap[ret]
