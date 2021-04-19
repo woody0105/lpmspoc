@@ -10,8 +10,7 @@ import (
 	"path"
 	"strconv"
 	"strings"
-
-	// "sync"
+	"sync"
 	"time"
 
 	// "github.com/livepeer/lpms/scheduler"
@@ -31,7 +30,7 @@ func main() {
 	// package being linked)
 	flag.Set("logtostderr", "true")
 	flag.Set("stderrthreshold", "WARNING")
-	flag.Set("v", "2")
+    flag.Set("v", "2")
 	// flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
 
 	in := flag.String("in", "", "Input m3u8 manifest file")
@@ -73,7 +72,7 @@ func main() {
 	}
 
 	ffmpeg.InitFFmpeg()
-	// var wg sync.WaitGroup
+	var wg sync.WaitGroup
 	dir := path.Dir(*in)
 
 	table := tablewriter.NewWriter(os.Stderr)
@@ -91,97 +90,82 @@ func main() {
 	table.Render()
 
 	fmt.Println("timestamp,session,segment,seg_dur,transcode_time")
-	dec := ffmpeg.NewDecoder()
-	scheduler := CreateNewScheduler(*concurrentSessions)
+
+
+	// encWorker.Start()
+	scheduler := CreateNewScheduler(1)
 	scheduler.Start()
-	k := 1
-	for j, v := range pl.Segments {
-		// iterStart := time.Now()
-		if *segs > 0 && j >= *segs {
-			break
-		}
-		if v == nil {
-			continue
-		}
-		u := path.Join(dir, v.URI)
-		in := &ffmpeg.TranscodeOptionsIn{
-			Fname: u,
-			Accel: accel,
-		}
-		if ffmpeg.Software != accel {
-			in.Device = devices[k%len(devices)]
-		}
-		profs2opts := func(profs []ffmpeg.VideoProfile) []ffmpeg.TranscodeOptions {
-			opts := []ffmpeg.TranscodeOptions{}
-			for n, p := range profs {
-				oname := ""
-				muxer := ""
-				if *outPrefix != "" {
-					oname = fmt.Sprintf("%s_%s_%d_%d_%d.ts", *outPrefix, p.Name, n, k, j)
-					muxer = "mpegts"
-				} else {
-					oname = "-"
-					muxer = "null"
+	// k := 1
+
+	for i := 0; i < *concurrentSessions; i++ {
+		wg.Add(1)
+		go func(k int, wg *sync.WaitGroup) {
+			dec := ffmpeg.NewDecoder()
+			for j, v := range pl.Segments{
+				// iterStart := time.Now()
+				if *segs > 0 && j >= *segs {
+					break
 				}
-				o := ffmpeg.TranscodeOptions{
-					Oname:        oname,
-					Profile:      p,
-					Accel:        accel,
-					AudioEncoder: ffmpeg.ComponentOptions{Name: "drop"},
-					Muxer:        ffmpeg.ComponentOptions{Name: muxer},
+				if v == nil {
+					continue
 				}
-				opts = append(opts, o)
+				u := path.Join(dir, v.URI)
+				in := &ffmpeg.TranscodeOptionsIn{
+					Fname: u,
+					Accel: accel,
+				}
+				if ffmpeg.Software != accel {
+					in.Device = devices[k%len(devices)]
+				}
+				profs2opts := func(profs []ffmpeg.VideoProfile) []ffmpeg.TranscodeOptions {
+					opts := []ffmpeg.TranscodeOptions{}
+					for n, p := range profs {
+						oname := ""
+						muxer := ""
+						if *outPrefix != "" {
+							oname = fmt.Sprintf("%s_%s_%d_%d_%d.ts", *outPrefix, p.Name, n, k, j)
+							muxer = "mpegts"
+						} else {
+							oname = "-"
+							muxer = "null"
+						}
+						o := ffmpeg.TranscodeOptions{
+							Oname:        oname,
+							Profile:      p,
+							Accel:        accel,
+							AudioEncoder: ffmpeg.ComponentOptions{Name: "drop"},
+							Muxer:        ffmpeg.ComponentOptions{Name: muxer},
+						}
+						opts = append(opts, o)
+					}
+					return opts
+				}
+				out := profs2opts(profiles)
+
+				res, err := dec.Decode(in)
+				fmt.Printf("profile=input frames=%v pixels=%v\n", res.Decoded.Frames, res.Decoded.Pixels)
+				if err != nil {
+					glog.Fatalf("Decoding failed for session %d segment %d: %v", k, j, err)
+				}
+				encJob := EncodeJob{
+					input: &ffmpeg.EncodeOptionsIn{
+							DframeBuf: res.DframeBuf,
+							Accel:     accel,
+							Device:    devices[k%len(devices)],
+							DecHandle:      res.DecHandle,
+							Dmeta:     res.Dmeta,
+						}, 
+					ps: out,
+				}
+				// encWorker.AddJob(&encJob)
+				go func() { scheduler.jobs <- &encJob }()
 			}
-			return opts
-		}
-		out := profs2opts(profiles)
-		// fmt.Println(out)
-		// t := time.Now()
-		// _, err := tc.Transcode(in, out)
-		res, err := dec.Decode(in)
-		fmt.Printf("profile=input frames=%v pixels=%v\n", res.Decoded.Frames, res.Decoded.Pixels)
-		if err != nil {
-			glog.Fatalf("Decoding failed for session %d segment %d: %v", k, j, err)
-		}
-		encJob := EncodeJob{
-			input: &ffmpeg.EncodeOptionsIn{
-				DframeBuf: res.DframeBuf,
-				Accel:     accel,
-				Device:    devices[k%len(devices)],
-				DecHandle: res.DecHandle,
-				Dmeta:     res.Dmeta,
-			},
-			ps: out,
-		}
-		// encWorker.AddJob(&encJob)
-		go func() { scheduler.jobs <- &encJob }()
-		// fmt.Printf("profile=input frames=%v pixels=%v out#=%d\n", res.Decoded.Frames, res.Decoded.Pixels, len(out))
-		// _, err = ts.Enc1.Encode(&ffmpeg.EncodeOptionsIn{
-		// 	DframeBuf: res.DframeBuf,
-		// 	Accel:     accel,
-		// 	Device:    devices[k%len(devices)],
-		// 	DecHandle:      res.DecHandle,
-		// }, out)
-		// end := time.Now()
-		// if err != nil {
-		// 	glog.Fatalf("Transcoding failed for session %d segment %d: %v", k, j, err)
-		// }
-		// fmt.Printf("%s,%d,%d,%0.4v,%0.4v\n", end.Format("2006-01-02 15:04:05.9999"), k, j, v.Duration, end.Sub(t).Seconds())
-		// segTxDur := end.Sub(t).Seconds()
-		// mu.Lock()
-		// transcodeDur += segTxDur
-		// srcDur += v.Duration
-		// segCount++
-		// if segTxDur <= v.Duration {
-		// 	realTimeSegCount += 1
-		// }
-		// mu.Unlock()
-		// iterEnd := time.Now()
-		// segDur := time.Duration(v.Duration * float64(time.Second))
-		// if *live {
-		// 	time.Sleep(segDur - iterEnd.Sub(iterStart))
-		// }
+	dec.StopDecoder()
+	wg.Done()
+	}(i, &wg)
+	time.Sleep(300 * time.Millisecond)
 	}
+	wg.Wait()
 	// ts.Dec.StopDecoder()
 	// ts.Enc1.StopEncoder()
 
@@ -286,26 +270,26 @@ func parseVideoProfiles(inp string) []ffmpeg.VideoProfile {
 }
 
 type EncodeJob struct {
-	ID    int
-	input *ffmpeg.EncodeOptionsIn
-	ps    []ffmpeg.TranscodeOptions
+	ID int
+    input *ffmpeg.EncodeOptionsIn
+	ps []ffmpeg.TranscodeOptions
 }
 
 type EncodeWorker struct {
-	ID      int
-	jobs    chan *EncodeJob
-	encoder *ffmpeg.Encoder
-	Gpumem  int64
-	Quit    chan bool
+   ID int
+   jobs chan *EncodeJob
+   encoder *ffmpeg.Encoder
+   Gpumem int64
+   Quit chan bool
 }
 
 type EncoderStatus struct {
-	ID     int
+	ID int
 	Gpumem int64
-}
+ }
 
-type EncodeScheduler struct {
-	jobs      chan *EncodeJob
+type EncodeScheduler struct{
+	jobs chan *EncodeJob
 	encStatus chan *EncoderStatus
 	// encstatus []EncoderStatus
 	workers []*EncodeWorker
@@ -322,44 +306,44 @@ func CreateNewScheduler(numEncoders int) *EncodeScheduler {
 	}
 
 	return s
-}
-
-func (s *EncodeScheduler) Start() {
+ }
+ 
+ func (s *EncodeScheduler) Start() {
 	// wait for work to be added then pass it off.
-	go func() {
+	go func() { 
 		for {
 			select {
-			case job := <-s.jobs:
+			case job := <- s.jobs:
 				// update status
 				id := getBestEncoder(s.workers)
 				s.workers[id].AddJob(job)
 				// update status
 				// s.encStatus <- &EncoderStatus{ID: 0, Gpumem: 100}
-			case es := <-s.encStatus:
+			case es := <- s.encStatus:
 				fmt.Println(es)
 			}
 		}
 	}()
-}
+ }
 
 func CreateNewEncodeWorker(id int) *EncodeWorker {
 	w := &EncodeWorker{
-		ID:      id,
-		jobs:    make(chan *EncodeJob),
+		ID: id, 
+		jobs: make(chan *EncodeJob),
 		encoder: ffmpeg.NewEncoder(),
 	}
-
+ 
 	return w
-}
-
+ }
+ 
 func (w *EncodeWorker) Start() {
 	go func() {
 		for {
 			select {
-			case job := <-w.jobs:
+			case job := <- w.jobs:
 				fmt.Printf("Worker executing job\n")
 				w.encoder.Encode(job.input, job.ps)
-			case <-w.Quit:
+			case <- w.Quit:
 				return
 			}
 		}
@@ -367,15 +351,15 @@ func (w *EncodeWorker) Start() {
 }
 
 func (w *EncodeWorker) AddJob(encodeJob *EncodeJob) {
-	w.Gpumem += 1000 // increament dummy value for PoC, fix with real gpumem later...
-	go func() { w.jobs <- encodeJob }()
-	fmt.Printf("Encoding job added to worker%d\n", w.ID)
+	  w.Gpumem += 1000			// increament dummy value for PoC, fix with real gpumem later...
+	  go func() { w.jobs <- encodeJob }()
+	  fmt.Printf("Encoding job added to worker%d\n", w.ID)
 }
 
 func getBestEncoder(workers []*EncodeWorker) int {
 	minId := 0
-	for i, e := range workers {
-		if i == 0 || e.Gpumem < workers[minId].Gpumem {
+	for i, e := range workers{
+		if i==0 || e.Gpumem < workers[minId].Gpumem {
 			minId = i
 		}
 	}
