@@ -91,7 +91,7 @@ func main() {
 	table.Render()
 
 	fmt.Println("timestamp,session,segment,seg_dur,transcode_time")
-
+	dec := ffmpeg.NewDecoder()
 	scheduler := CreateNewScheduler(*concurrentSessions)
 	scheduler.Start()
 	k := 1
@@ -138,7 +138,7 @@ func main() {
 		// fmt.Println(out)
 		// t := time.Now()
 		// _, err := tc.Transcode(in, out)
-		res, err := ts.Dec.Decode(in)
+		res, err := dec.Decode(in)
 		fmt.Printf("profile=input frames=%v pixels=%v\n", res.Decoded.Frames, res.Decoded.Pixels)
 		if err != nil {
 			glog.Fatalf("Decoding failed for session %d segment %d: %v", k, j, err)
