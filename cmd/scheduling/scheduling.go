@@ -10,10 +10,11 @@ import (
 	"path"
 	"strconv"
 	"strings"
+
 	// "sync"
 	"time"
 
-	"github.com/livepeer/lpms/scheduler"
+	// "github.com/livepeer/lpms/scheduler"
 
 	//"runtime/pprof"
 
@@ -30,7 +31,7 @@ func main() {
 	// package being linked)
 	flag.Set("logtostderr", "true")
 	flag.Set("stderrthreshold", "WARNING")
-    flag.Set("v", "2")
+	flag.Set("v", "2")
 	// flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
 
 	in := flag.String("in", "", "Input m3u8 manifest file")
@@ -90,31 +91,11 @@ func main() {
 	table.Render()
 
 	fmt.Println("timestamp,session,segment,seg_dur,transcode_time")
-	// segCount := 0
-	// realTimeSegCount := 0
-	// srcDur := 0.0
-	// // var mu sync.Mutex
-	// transcodeDur := 0.0
-	// stateman := scheduler.NewStateManager(3)
-	ts := scheduler.TaskScheduler{
-		StateMan: scheduler.NewStateManager(3),
-		Dec: ffmpeg.NewDecoder(),
-		Enc1: ffmpeg.NewEncoder(),
-		Enc2: ffmpeg.NewEncoder(),
-		Enc3: ffmpeg.NewEncoder(),
-	}
 
-	fmt.Printf("# of sessions=%d\n", ts.StateMan.SesCount)
-	// jobQueue chan *EncodeJob
-	// var encWorker *EncodeWorker
-	// encWorker = CreateNewEncodeWorker(1)
-
-
-	// encWorker.Start()
 	scheduler := CreateNewScheduler(*concurrentSessions)
 	scheduler.Start()
 	k := 1
-	for j, v := range pl.Segments{
+	for j, v := range pl.Segments {
 		// iterStart := time.Now()
 		if *segs > 0 && j >= *segs {
 			break
@@ -164,12 +145,12 @@ func main() {
 		}
 		encJob := EncodeJob{
 			input: &ffmpeg.EncodeOptionsIn{
-					DframeBuf: res.DframeBuf,
-					Accel:     accel,
-					Device:    devices[k%len(devices)],
-					DecHandle:      res.DecHandle,
-					Dmeta:     res.Dmeta,
-				}, 
+				DframeBuf: res.DframeBuf,
+				Accel:     accel,
+				Device:    devices[k%len(devices)],
+				DecHandle: res.DecHandle,
+				Dmeta:     res.Dmeta,
+			},
 			ps: out,
 		}
 		// encWorker.AddJob(&encJob)
@@ -305,26 +286,26 @@ func parseVideoProfiles(inp string) []ffmpeg.VideoProfile {
 }
 
 type EncodeJob struct {
-	ID int
-    input *ffmpeg.EncodeOptionsIn
-	ps []ffmpeg.TranscodeOptions
+	ID    int
+	input *ffmpeg.EncodeOptionsIn
+	ps    []ffmpeg.TranscodeOptions
 }
 
 type EncodeWorker struct {
-   ID int
-   jobs chan *EncodeJob
-   encoder *ffmpeg.Encoder
-   Gpumem int64
-   Quit chan bool
+	ID      int
+	jobs    chan *EncodeJob
+	encoder *ffmpeg.Encoder
+	Gpumem  int64
+	Quit    chan bool
 }
 
 type EncoderStatus struct {
-	ID int
+	ID     int
 	Gpumem int64
- }
+}
 
-type EncodeScheduler struct{
-	jobs chan *EncodeJob
+type EncodeScheduler struct {
+	jobs      chan *EncodeJob
 	encStatus chan *EncoderStatus
 	// encstatus []EncoderStatus
 	workers []*EncodeWorker
@@ -341,44 +322,44 @@ func CreateNewScheduler(numEncoders int) *EncodeScheduler {
 	}
 
 	return s
- }
- 
- func (s *EncodeScheduler) Start() {
+}
+
+func (s *EncodeScheduler) Start() {
 	// wait for work to be added then pass it off.
-	go func() { 
+	go func() {
 		for {
 			select {
-			case job := <- s.jobs:
+			case job := <-s.jobs:
 				// update status
 				id := getBestEncoder(s.workers)
 				s.workers[id].AddJob(job)
 				// update status
 				// s.encStatus <- &EncoderStatus{ID: 0, Gpumem: 100}
-			case es := <- s.encStatus:
+			case es := <-s.encStatus:
 				fmt.Println(es)
 			}
 		}
 	}()
- }
+}
 
 func CreateNewEncodeWorker(id int) *EncodeWorker {
 	w := &EncodeWorker{
-		ID: id, 
-		jobs: make(chan *EncodeJob),
+		ID:      id,
+		jobs:    make(chan *EncodeJob),
 		encoder: ffmpeg.NewEncoder(),
 	}
- 
+
 	return w
- }
- 
+}
+
 func (w *EncodeWorker) Start() {
 	go func() {
 		for {
 			select {
-			case job := <- w.jobs:
+			case job := <-w.jobs:
 				fmt.Printf("Worker executing job\n")
 				w.encoder.Encode(job.input, job.ps)
-			case <- w.Quit:
+			case <-w.Quit:
 				return
 			}
 		}
@@ -386,15 +367,15 @@ func (w *EncodeWorker) Start() {
 }
 
 func (w *EncodeWorker) AddJob(encodeJob *EncodeJob) {
-	  w.Gpumem += 1000			// increament dummy value for PoC, fix with real gpumem later...
-	  go func() { w.jobs <- encodeJob }()
-	  fmt.Printf("Encoding job added to worker%d\n", w.ID)
+	w.Gpumem += 1000 // increament dummy value for PoC, fix with real gpumem later...
+	go func() { w.jobs <- encodeJob }()
+	fmt.Printf("Encoding job added to worker%d\n", w.ID)
 }
 
 func getBestEncoder(workers []*EncodeWorker) int {
 	minId := 0
-	for i, e := range workers{
-		if i==0 || e.Gpumem < workers[minId].Gpumem {
+	for i, e := range workers {
+		if i == 0 || e.Gpumem < workers[minId].Gpumem {
 			minId = i
 		}
 	}
