@@ -5,6 +5,7 @@
 #include <libavutil/rational.h>
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
+#include <time.h>
 
 // LPMS specific errors
 extern const int lpms_ERR_INPUT_PIXFMT;

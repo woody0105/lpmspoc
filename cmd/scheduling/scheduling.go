@@ -24,6 +24,8 @@ import (
 	"github.com/olekukonko/tablewriter"
 )
 
+const resourceLimit int64 = 2048 * 1024   // vram limit to 4gb temporarily
+
 func main() {
 	// Override the default flag set since there are dependencies that
 	// incorrectly add their own flags (specifically, due to the 'testing'
@@ -91,18 +93,22 @@ func main() {
 
 	fmt.Println("timestamp,session,segment,seg_dur,transcode_time")
 
-
-	// encWorker.Start()
 	scheduler := CreateNewScheduler(1)
 	scheduler.Start()
-	// k := 1
+	start := time.Now()
 
+	segCount := 0
+	realTimeSegCount := 0
+	srcDur := 0.0
+	var mu sync.Mutex
+	transcodeDur := 0.0
+	// encodeDur:= 0.0
 	for i := 0; i < *concurrentSessions; i++ {
 		wg.Add(1)
 		go func(k int, wg *sync.WaitGroup) {
 			dec := ffmpeg.NewDecoder()
 			for j, v := range pl.Segments{
-				// iterStart := time.Now()
+				iterStart := time.Now()
 				if *segs > 0 && j >= *segs {
 					break
 				}
@@ -141,9 +147,23 @@ func main() {
 					return opts
 				}
 				out := profs2opts(profiles)
+				for  {
+					if scheduler.workers[0].Gpumem <= resourceLimit {
+						fmt.Printf("VRAM usage=%d felt below resource limit. Continuing...\n", scheduler.workers[0].Gpumem)	
+						break
+					}
+					fmt.Printf("VRAM usage=%d exceeded resource limit. Sleeping...\n", scheduler.workers[0].Gpumem)
+					time.Sleep(300 * time.Millisecond)
+				}
 
+
+				t := time.Now()
 				res, err := dec.Decode(in)
-				fmt.Printf("profile=input frames=%v pixels=%v\n", res.Decoded.Frames, res.Decoded.Pixels)
+				// fmt.Printf("profile=input frames=%v pixels=%v\n", res.Decoded.Frames, res.Decoded.Pixels)
+				
+				// update gpumem
+				scheduler.workers[0].Gpumem += pixel2kilobyte(res.Decoded.Pixels)
+
 				if err != nil {
 					glog.Fatalf("Decoding failed for session %d segment %d: %v", k, j, err)
 				}
@@ -154,40 +174,54 @@ func main() {
 							Device:    devices[k%len(devices)],
 							DecHandle:      res.DecHandle,
 							Dmeta:     res.Dmeta,
+							Pixels:    res.Decoded.Pixels,
 						}, 
 					ps: out,
 				}
-				// encWorker.AddJob(&encJob)
-				go func() { scheduler.jobs <- &encJob }()
+
+				scheduler.jobs <- &encJob
+				end := time.Now()
+				segTxDur := end.Sub(t).Seconds()
+				mu.Lock()
+				transcodeDur += segTxDur
+				srcDur += v.Duration
+				segCount++
+				if segTxDur <= v.Duration {
+					realTimeSegCount += 1
+				}
+				mu.Unlock()
+				iterEnd := time.Now()
+				segDur := time.Duration(v.Duration * float64(time.Second))
+				if *live {
+					time.Sleep(segDur - iterEnd.Sub(iterStart))
+				}
 			}
-	dec.StopDecoder()
 	wg.Done()
 	}(i, &wg)
 	time.Sleep(300 * time.Millisecond)
 	}
 	wg.Wait()
-	// ts.Dec.StopDecoder()
-	// ts.Enc1.StopEncoder()
+	duration := time.Since(start)
 
-	// if segCount == 0 || srcDur == 0.0 {
-	// 	glog.Fatal("Input manifest has no segments or total duration is 0s")
-	// }
-	// statsTable := tablewriter.NewWriter(os.Stderr)
-	// stats := [][]string{
-	// 	{"Concurrent Sessions", fmt.Sprintf("%v", *concurrentSessions)},
-	// 	{"Total Segs Transcoded", fmt.Sprintf("%v", segCount)},
-	// 	{"Real-Time Segs Transcoded", fmt.Sprintf("%v", realTimeSegCount)},
-	// 	{"* Real-Time Segs Ratio *", fmt.Sprintf("%0.4v", float64(realTimeSegCount)/float64(segCount))},
-	// 	{"Total Source Duration", fmt.Sprintf("%vs", srcDur)},
-	// 	{"Total Transcoding Duration", fmt.Sprintf("%vs", transcodeDur)},
-	// 	{"* Real-Time Duration Ratio *", fmt.Sprintf("%0.4v", transcodeDur/srcDur)},
-	// }
+	// Formatted string, such as "2h3m0.5s" or "4.503μs"
+	fmt.Println(duration)
+	
+	statsTable := tablewriter.NewWriter(os.Stderr)
+	stats := [][]string{
+		{"Concurrent Sessions", fmt.Sprintf("%v", *concurrentSessions)},
+		{"Total Segs Transcoded", fmt.Sprintf("%v", segCount)},
+		{"Real-Time Segs Transcoded", fmt.Sprintf("%v", realTimeSegCount)},
+		{"* Real-Time Segs Ratio *", fmt.Sprintf("%0.4v", float64(realTimeSegCount)/float64(segCount))},
+		{"Total Source Duration", fmt.Sprintf("%vs", srcDur)},
+		{"Total Transcoding Duration", fmt.Sprintf("%vs", transcodeDur)},
+		{"* Real-Time Duration Ratio *", fmt.Sprintf("%0.4v", transcodeDur/srcDur)},
+	}
 
-	// statsTable.SetAlignment(tablewriter.ALIGN_LEFT)
-	// statsTable.SetCenterSeparator("*")
-	// statsTable.SetColumnSeparator("|")
-	// statsTable.AppendBulk(stats)
-	// statsTable.Render()
+	statsTable.SetAlignment(tablewriter.ALIGN_LEFT)
+	statsTable.SetCenterSeparator("*")
+	statsTable.SetColumnSeparator("|")
+	statsTable.AppendBulk(stats)
+	statsTable.Render()
 }
 
 func parseVideoProfiles(inp string) []ffmpeg.VideoProfile {
@@ -341,8 +375,18 @@ func (w *EncodeWorker) Start() {
 		for {
 			select {
 			case job := <- w.jobs:
-				fmt.Printf("Worker executing job\n")
+
+				// for  {
+				// 	if w.Gpumem <= resourceLimit {
+				// 		break
+				// 	}
+				// 	fmt.Printf("VRAM usage=%d exceeded resource limit. Sleeping...\n", w.Gpumem)
+				// 	time.Sleep(300 * time.Millisecond)
+				// }
 				w.encoder.Encode(job.input, job.ps)
+				// decrement gpumem after encoding is finished
+				// w.Gpumem -= encoption2kilobyte(job.ps)+pixel2kilobyte(job.input.Pixels)
+				w.Gpumem -= pixel2kilobyte(job.input.Pixels)
 			case <- w.Quit:
 				return
 			}
@@ -351,9 +395,9 @@ func (w *EncodeWorker) Start() {
 }
 
 func (w *EncodeWorker) AddJob(encodeJob *EncodeJob) {
-	  w.Gpumem += 1000			// increament dummy value for PoC, fix with real gpumem later...
+	  w.Gpumem += encoption2kilobyte(encodeJob.ps)			// increament dummy value for PoC, fix with real gpumem later...
+	  fmt.Printf("Adding job to worker gpumem = %d kb\n", w.Gpumem) 
 	  go func() { w.jobs <- encodeJob }()
-	  fmt.Printf("Encoding job added to worker%d\n", w.ID)
 }
 
 func getBestEncoder(workers []*EncodeWorker) int {
@@ -364,4 +408,28 @@ func getBestEncoder(workers []*EncodeWorker) int {
 		}
 	}
 	return minId
+}
+
+func pixel2kilobyte(pixelcount int64) int64{
+	return pixelcount * 3 / 1024
+}
+
+func encoption2kilobyte(ps []ffmpeg.TranscodeOptions) int64{
+	var numOfpixels int64
+	numOfpixels = 0
+	for _, profile :=range ps {
+		resolution := profile.Profile.Resolution
+		framerate := profile.Profile.Framerate
+		numOfpixels += resolution2pixelcnt(resolution) * int64(framerate)
+	}
+	return pixel2kilobyte(numOfpixels)
+}
+
+func resolution2pixelcnt (resolution string) int64{
+	var pixelcnt int64
+	s := strings.Split(resolution, "x")
+	width, _ := strconv.ParseInt(s[0], 10, 64)
+	height, _ := strconv.ParseInt(s[1], 10, 64)
+	pixelcnt = width * height
+	return pixelcnt
 }

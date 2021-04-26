@@ -398,7 +398,7 @@ int lpms_encode(input_params *inp, dframe_buffer *dframe_buffer, output_params *
   h->nb_outputs = nb_outputs;
   int reopen_decoders = 1;
   struct input_ctx *ictx = &h->ictx;
-  printf("drop audio enc %d %x lastframe=%x\n", ictx->da, ictx->ic, ictx->last_frame_v);
+  // printf("drop audio enc %d %x lastframe=%x\n", ictx->da, ictx->ic, ictx->last_frame_v);
   struct output_ctx *outputs = h->outputs;
   AVPacket ipkt = {0};
   // populate output contexts
@@ -560,6 +560,8 @@ int lpms_encode1(input_params *inp, dframe_buffer *dframe_buffer, output_params 
     AVStream *ist = NULL;
     AVCodecContext *encoder = NULL;
     int rewind_flag = 0;
+    clock_t t;
+    t = clock();
     for(int cnt=0; cnt < dframe_buffer->cnt; cnt++){
       ret = 0; // reset to avoid any carry-through
       // ist = ictx->ic->streams[dframe_buffer->dframes[cnt].in_pkt.stream_index];
@@ -600,12 +602,14 @@ int lpms_encode1(input_params *inp, dframe_buffer *dframe_buffer, output_params 
       else if (ret < 0) LPMS_ERR(transcode_cleanup, "Error encoding");
     }
     ret = flush_outputs1(dmeta, &outputs[i]);
+    t = clock() - t;
+    float time_taken = ((float)t)/(CLOCKS_PER_SEC/1000); 
+    printf("Encoding segment %d x %d took %f milli seconds\n", octx->width, octx->height, time_taken);
     if (ret < 0) LPMS_ERR(transcode_cleanup, "Unable to fully flush outputs")
   }
   for(int j=0; j < dframe_buffer->cnt; j++)
     av_packet_unref(&dframe_buffer->dframes[j].in_pkt);
-  // if(dframe_buffer->dframes != NULL)
-  //   free(dframe_buffer->dframes);
+
 
 transcode_cleanup:
   // if (ictx->ic) {
@@ -620,14 +624,20 @@ transcode_cleanup:
   //     avio_closep(&ictx->ic->pb);
   //   }
   // }
+  
+  // free dframes
   for (int j=0; j < MAX_DFRAME_CNT; j++){
     if (dframe_buffer->dframes[j].dec_frame) av_frame_free(&(dframe_buffer->dframes[j].dec_frame));
+  }
+  if (dframe_buffer->dframes){
+    free(dframe_buffer->dframes);
   }
   // ictx->flushed = 0;
   // ictx->flushing = 0;
   // ictx->pkt_diff = 0;
   // ictx->sentinel_count = 0;
-  // av_packet_unref(&ipkt);  // needed for early exits
+  av_packet_unref(&ipkt);  // needed for early exits
+  if(dmeta->last_frame_v) av_frame_unref(dmeta->last_frame_v);
   // if (ictx->first_pkt) av_packet_free(&ictx->first_pkt);
   // if (ictx->ac) avcodec_free_context(&ictx->ac);
   // if (ictx->vc && AV_HWDEVICE_TYPE_NONE == ictx->hw_type) avcodec_free_context(&ictx->vc);
@@ -755,14 +765,14 @@ int decode(struct transcode_thread *h,
   }
 
   for(int dfcount=0; dfcount < MAX_DFRAME_CNT; dfcount++){
-    // dframe[dfcount].dec_frame = av_frame_alloc();
-    // av_init_packet(&dframe[dfcount].in_pkt);
-    // if (!dframe[dfcount].dec_frame) LPMS_ERR(transcode_cleanup, "Unable to allocate frame");
     dframe_buf->dframes[dfcount].dec_frame = av_frame_alloc();
     av_init_packet(&(dframe_buf->dframes[dfcount].in_pkt));
     if (!dframe_buf->dframes[dfcount].dec_frame) LPMS_ERR(transcode_cleanup, "Unable to allocate frame");
   }
   int dfcount = 0;
+
+  clock_t t;
+  t = clock();
   while (1) {
     // DEMUXING & DECODING
     int has_frame = 0;
@@ -822,6 +832,9 @@ int decode(struct transcode_thread *h,
       dfcount++;
     }
   }
+  t = clock() - t;
+  float time_taken = ((float)t)/CLOCKS_PER_SEC; 
+  printf("Decoding segment took %f seconds\n", time_taken);
   dframe_buf->cnt = dfcount;
   	
 transcode_cleanup:

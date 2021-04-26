@@ -60,8 +60,9 @@ type EncodeOptionsIn struct {
 	Accel     Acceleration
 	Device    string
 	DecHandle *C.struct_transcode_thread
-	Ictx *C.struct_input_ctx
+	// Ictx *C.struct_input_ctx
 	Dmeta     *C.struct_decode_meta
+	Pixels	  int64
 }
 
 type TranscodeOptions struct {

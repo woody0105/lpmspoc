@@ -200,7 +200,12 @@ int open_output(struct output_ctx *octx, struct input_ctx *ictx)
         vc->pix_fmt = av_buffersink_get_format(octx->vf.sink_ctx); // XXX select based on encoder + input support
         if (fmt->flags & AVFMT_GLOBALHEADER) vc->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
         av_log(NULL, AV_LOG_INFO, "Opening video encoder session for %dx%d fps %d/%d tb %d/%d bitrate %ld\n", vc->width, vc->height, vc->framerate.num, vc->framerate.den, vc->time_base.num, vc->time_base.den, (long) vc->bit_rate);
+        clock_t t;
+        t = clock();
         ret = avcodec_open2(vc, codec, &octx->video->opts);
+        t = clock() - t;
+        float time_taken = ((float)t)/CLOCKS_PER_SEC; 
+        printf("Opening session took %f seconds\n", time_taken);
         if (ret < 0) LPMS_ERR(open_output_err, "Error opening video encoder");
     } else {
         octx->vc = vc;
@@ -319,7 +324,7 @@ int mux(AVPacket *pkt, AVRational tb, struct output_ctx *octx, AVStream *ost)
       if (octx->drop_ts == AV_NOPTS_VALUE) octx->drop_ts = pkt->pts;
       if (pkt->pts && pkt->pts == octx->drop_ts) return 0;
   }
-
+  // printf("stream cur_dtx=%d, packet dts=%d\n",  ost->cur_dts, pkt->dts);
   return av_interleaved_write_frame(octx->oc, pkt);
 }
 
@@ -458,7 +463,12 @@ int open_output1(struct output_ctx *octx, struct decode_meta *dmeta)
         vc->pix_fmt = av_buffersink_get_format(octx->vf.sink_ctx); // XXX select based on encoder + input support
         if (fmt->flags & AVFMT_GLOBALHEADER) vc->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
         av_log(NULL, AV_LOG_INFO, "Opening video encoder session for %dx%d fps %d/%d tb %d/%d bitrate %ld\n", vc->width, vc->height, vc->framerate.num, vc->framerate.den, vc->time_base.num, vc->time_base.den, (long) vc->bit_rate);
+        clock_t t;
+        t = clock();
         ret = avcodec_open2(vc, codec, &octx->video->opts);
+        t = clock() - t;
+        float time_taken = ((float)t)/CLOCKS_PER_SEC; 
+        printf("Opening session took %f seconds\n", time_taken);
         if (ret < 0) LPMS_ERR(open_output_err, "Error opening video encoder");
     } else {
         octx->vc = vc;
