@@ -24,15 +24,23 @@ import (
 	"github.com/olekukonko/tablewriter"
 )
 
-const resourceLimit int64 = 2048 * 1024   // vram limit to 4gb temporarily
+const resourceLimit int64 = 4096 * 1024 // vram limit to 4gb temporarily
+const MAXSTREAM int = 100
+
+/*
+maximum allowable difference between encode count and decode count.
+this is necessary because vram gets freed after encoding finishes.
+if decoding goes faster and encoding des not catch up, vram will not be freed.
+*/
+const MAXSEGDIFF int = 5
 
 func main() {
 	// Override the default flag set since there are dependencies that
 	// incorrectly add their own flags (specifically, due to the 'testing'
 	// package being linked)
-	flag.Set("logtostderr", "true")
-	flag.Set("stderrthreshold", "WARNING")
-    flag.Set("v", "2")
+	flag.Set("logtostderr", "false")
+	flag.Set("stderrthreshold", "FATAL")
+	flag.Set("v", "2")
 	// flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
 
 	in := flag.String("in", "", "Input m3u8 manifest file")
@@ -93,7 +101,7 @@ func main() {
 
 	fmt.Println("timestamp,session,segment,seg_dur,transcode_time")
 
-	scheduler := CreateNewScheduler(1)
+	scheduler := CreateNewScheduler(len(devices))
 	scheduler.Start()
 	start := time.Now()
 
@@ -107,7 +115,7 @@ func main() {
 		wg.Add(1)
 		go func(k int, wg *sync.WaitGroup) {
 			dec := ffmpeg.NewDecoder()
-			for j, v := range pl.Segments{
+			for j, v := range pl.Segments {
 				iterStart := time.Now()
 				if *segs > 0 && j >= *segs {
 					break
@@ -147,39 +155,59 @@ func main() {
 					return opts
 				}
 				out := profs2opts(profiles)
-				for  {
-					if scheduler.workers[0].Gpumem <= resourceLimit {
-						fmt.Printf("VRAM usage=%d felt below resource limit. Continuing...\n", scheduler.workers[0].Gpumem)	
+
+				/*
+					scheduler.workers[0].Gpumem += encoption2kilobyte(out)
+					for {
+						if scheduler.workers[0].Gpumem <= resourceLimit {
+							// fmt.Printf("VRAM usage=%d felt below resource limit. Continuing...\n", scheduler.workers[0].Gpumem)
+							break
+						}
+						fmt.Printf("VRAM usage=%d exceeded resource limit. Sleeping...\n", scheduler.workers[0].Gpumem)
+						time.Sleep(300 * time.Millisecond)
+					}
+				*/
+
+				for {
+					diffCount := sumOfarray(scheduler.decodeCnts[k]) - sumOfarray(scheduler.encodeCnts[k])
+					if diffCount < MAXSEGDIFF {
 						break
 					}
-					fmt.Printf("VRAM usage=%d exceeded resource limit. Sleeping...\n", scheduler.workers[0].Gpumem)
+					fmt.Printf("Encoding has fallen behind more than threshold. diffCount=%d\n", diffCount)
 					time.Sleep(300 * time.Millisecond)
 				}
 
-
 				t := time.Now()
+				glog.Infof("Starting decoding of segment %d of stream %d\n", j, k)
 				res, err := dec.Decode(in)
-				// fmt.Printf("profile=input frames=%v pixels=%v\n", res.Decoded.Frames, res.Decoded.Pixels)
-				
-				// update gpumem
-				scheduler.workers[0].Gpumem += pixel2kilobyte(res.Decoded.Pixels)
+				scheduler.decodeCnts[k] = j
 
 				if err != nil {
 					glog.Fatalf("Decoding failed for session %d segment %d: %v", k, j, err)
 				}
+
+				gpuid, _ := strconv.Atoi(devices[k%len(devices)])
+
 				encJob := EncodeJob{
+					ID: k % len(devices),
 					input: &ffmpeg.EncodeOptionsIn{
-							DframeBuf: res.DframeBuf,
-							Accel:     accel,
-							Device:    devices[k%len(devices)],
-							DecHandle:      res.DecHandle,
-							Dmeta:     res.Dmeta,
-							Pixels:    res.Decoded.Pixels,
-						}, 
-					ps: out,
+						DframeBuf: res.DframeBuf,
+						Accel:     accel,
+						Device:    devices[k%len(devices)],
+						DecHandle: res.DecHandle,
+						Dmeta:     res.Dmeta,
+						Pixels:    res.Decoded.Pixels,
+					},
+					ps:       out,
+					device:   gpuid,
+					streamId: k,
+					segCount: j,
 				}
 
 				scheduler.jobs <- &encJob
+				glog.Infof("Adding job to worker %d, gpuid=%d\n", k%len(devices), gpuid)
+				// scheduler.workers[k%len(devices)].AddJob(&encJob)
+
 				end := time.Now()
 				segTxDur := end.Sub(t).Seconds()
 				mu.Lock()
@@ -196,16 +224,16 @@ func main() {
 					time.Sleep(segDur - iterEnd.Sub(iterStart))
 				}
 			}
-	wg.Done()
-	}(i, &wg)
-	time.Sleep(300 * time.Millisecond)
+			dec.StopDecoder()
+			wg.Done()
+		}(i, &wg)
+		time.Sleep(300 * time.Millisecond)
 	}
 	wg.Wait()
 	duration := time.Since(start)
 
-	// Formatted string, such as "2h3m0.5s" or "4.503μs"
 	fmt.Println(duration)
-	
+
 	statsTable := tablewriter.NewWriter(os.Stderr)
 	stats := [][]string{
 		{"Concurrent Sessions", fmt.Sprintf("%v", *concurrentSessions)},
@@ -304,78 +332,89 @@ func parseVideoProfiles(inp string) []ffmpeg.VideoProfile {
 }
 
 type EncodeJob struct {
-	ID int
-    input *ffmpeg.EncodeOptionsIn
-	ps []ffmpeg.TranscodeOptions
+	ID       int
+	input    *ffmpeg.EncodeOptionsIn
+	ps       []ffmpeg.TranscodeOptions
+	device   int
+	streamId int
+	segCount int
 }
 
 type EncodeWorker struct {
-   ID int
-   jobs chan *EncodeJob
-   encoder *ffmpeg.Encoder
-   Gpumem int64
-   Quit chan bool
+	ID        int
+	jobs      chan *EncodeJob
+	encoder   *ffmpeg.Encoder
+	encStatus chan *EncodeStatus
+	Gpumem    int64
+	Quit      chan bool
 }
 
-type EncoderStatus struct {
-	ID int
-	Gpumem int64
- }
+type EncodeStatus struct {
+	StreamId int
+	Gpumem   int64
+	SegCount int
+}
 
-type EncodeScheduler struct{
-	jobs chan *EncodeJob
-	encStatus chan *EncoderStatus
-	// encstatus []EncoderStatus
-	workers []*EncodeWorker
+type EncodeScheduler struct {
+	decodeCnts [MAXSTREAM]int
+	encodeCnts [MAXSTREAM]int
+	jobs       chan *EncodeJob
+	encStatus  chan *EncodeStatus
+	workers    []*EncodeWorker
 }
 
 func CreateNewScheduler(numEncoders int) *EncodeScheduler {
 	s := &EncodeScheduler{
-		jobs: make(chan *EncodeJob),
+		jobs:      make(chan *EncodeJob),
+		encStatus: make(chan *EncodeStatus),
 	}
+
+	for j := 0; j < MAXSTREAM; j++ {
+		s.decodeCnts[j] = 0
+		s.encodeCnts[j] = 0
+	}
+
 	for i := 0; i < numEncoders; i++ {
-		worker := CreateNewEncodeWorker(i)
-		worker.Start()
+		worker := CreateNewEncodeWorker(i, s.encStatus)
 		s.workers = append(s.workers, worker)
+		worker.Start()
 	}
 
 	return s
- }
- 
- func (s *EncodeScheduler) Start() {
+}
+
+func (s *EncodeScheduler) Start() {
 	// wait for work to be added then pass it off.
-	go func() { 
+	go func() {
 		for {
 			select {
-			case job := <- s.jobs:
-				// update status
-				id := getBestEncoder(s.workers)
-				s.workers[id].AddJob(job)
-				// update status
-				// s.encStatus <- &EncoderStatus{ID: 0, Gpumem: 100}
-			case es := <- s.encStatus:
-				fmt.Println(es)
+			case job := <-s.jobs:
+				s.workers[job.ID].AddJob(job)
+
+			case es := <-s.encStatus:
+				glog.Infof("Finished encoding segment %d of stream %d\n", es.SegCount, es.StreamId)
+				s.encodeCnts[es.StreamId] = es.SegCount
 			}
 		}
 	}()
- }
+}
 
-func CreateNewEncodeWorker(id int) *EncodeWorker {
+func CreateNewEncodeWorker(id int, encStatus chan *EncodeStatus) *EncodeWorker {
 	w := &EncodeWorker{
-		ID: id, 
-		jobs: make(chan *EncodeJob),
-		encoder: ffmpeg.NewEncoder(),
+		ID:        id,
+		jobs:      make(chan *EncodeJob),
+		encoder:   ffmpeg.NewEncoder(),
+		encStatus: encStatus,
 	}
- 
+
 	return w
- }
- 
+}
+
 func (w *EncodeWorker) Start() {
 	go func() {
 		for {
 			select {
-			case job := <- w.jobs:
-
+			case job := <-w.jobs:
 				// for  {
 				// 	if w.Gpumem <= resourceLimit {
 				// 		break
@@ -384,10 +423,11 @@ func (w *EncodeWorker) Start() {
 				// 	time.Sleep(300 * time.Millisecond)
 				// }
 				w.encoder.Encode(job.input, job.ps)
+				w.encStatus <- &EncodeStatus{StreamId: job.streamId, SegCount: job.segCount}
 				// decrement gpumem after encoding is finished
-				// w.Gpumem -= encoption2kilobyte(job.ps)+pixel2kilobyte(job.input.Pixels)
-				w.Gpumem -= pixel2kilobyte(job.input.Pixels)
-			case <- w.Quit:
+				// w.Gpumem -= encoption2kilobyte(job.ps) + pixel2kilobyte(job.input.Pixels)
+				// w.Gpumem -= encoption2kilobyte(job.ps)
+			case <-w.Quit:
 				return
 			}
 		}
@@ -395,29 +435,29 @@ func (w *EncodeWorker) Start() {
 }
 
 func (w *EncodeWorker) AddJob(encodeJob *EncodeJob) {
-	  w.Gpumem += encoption2kilobyte(encodeJob.ps)			// increament dummy value for PoC, fix with real gpumem later...
-	  fmt.Printf("Adding job to worker gpumem = %d kb\n", w.Gpumem) 
-	  go func() { w.jobs <- encodeJob }()
+	//   w.Gpumem += encoption2kilobyte(encodeJob.ps)			// increament dummy value for PoC, fix with real gpumem later...
+	glog.Infof("Adding job to worker %d gpuid=%d\n", w.ID, encodeJob.device)
+	go func() { w.jobs <- encodeJob }()
 }
 
 func getBestEncoder(workers []*EncodeWorker) int {
 	minId := 0
-	for i, e := range workers{
-		if i==0 || e.Gpumem < workers[minId].Gpumem {
+	for i, e := range workers {
+		if i == 0 || e.Gpumem < workers[minId].Gpumem {
 			minId = i
 		}
 	}
 	return minId
 }
 
-func pixel2kilobyte(pixelcount int64) int64{
+func pixel2kilobyte(pixelcount int64) int64 {
 	return pixelcount * 3 / 1024
 }
 
-func encoption2kilobyte(ps []ffmpeg.TranscodeOptions) int64{
+func encoption2kilobyte(ps []ffmpeg.TranscodeOptions) int64 {
 	var numOfpixels int64
 	numOfpixels = 0
-	for _, profile :=range ps {
+	for _, profile := range ps {
 		resolution := profile.Profile.Resolution
 		framerate := profile.Profile.Framerate
 		numOfpixels += resolution2pixelcnt(resolution) * int64(framerate)
@@ -425,11 +465,19 @@ func encoption2kilobyte(ps []ffmpeg.TranscodeOptions) int64{
 	return pixel2kilobyte(numOfpixels)
 }
 
-func resolution2pixelcnt (resolution string) int64{
+func resolution2pixelcnt(resolution string) int64 {
 	var pixelcnt int64
 	s := strings.Split(resolution, "x")
 	width, _ := strconv.ParseInt(s[0], 10, 64)
 	height, _ := strconv.ParseInt(s[1], 10, 64)
 	pixelcnt = width * height
 	return pixelcnt
+}
+
+func sumOfarray(numbs ...int) int {
+	result := 0
+	for _, v := range numbs {
+		result += v
+	}
+	return result
 }

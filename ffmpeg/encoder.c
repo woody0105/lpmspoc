@@ -146,7 +146,7 @@ void close_output(struct output_ctx *octx)
 void free_output(struct output_ctx *octx)
 {
   close_output(octx);
-  if (octx->vc) avcodec_free_context(&octx->vc);
+  // if (octx->vc) avcodec_free_context(&octx->vc);
   free_filter(&octx->vf);
   free_filter(&octx->af);
 }
@@ -419,7 +419,7 @@ add_video_err:
 int open_output1(struct output_ctx *octx, struct decode_meta *dmeta)
 {
   int ret = 0, inp_has_stream;
-
+  av_log(NULL, AV_LOG_WARNING, "open output function called\n");
   AVOutputFormat *fmt = NULL;
   AVFormatContext *oc = NULL;
   static AVCodecContext *vc  = NULL;
@@ -432,16 +432,19 @@ int open_output1(struct output_ctx *octx, struct decode_meta *dmeta)
   octx->oc = oc;
   // add video encoder if a decoder exists and this output requires one
   if (needs_decoder(octx->video->name)) {
+    av_log(NULL, AV_LOG_WARNING, "open output function called 2\n");
     ret = init_video_filters1(dmeta, octx);
     if (ret < 0) LPMS_ERR(open_output_err, "Unable to open video filter");
-
+    av_log(NULL, AV_LOG_WARNING, "open output function called 3\n");
     codec = avcodec_find_encoder_by_name(octx->video->name);
     if (!codec) LPMS_ERR(open_output_err, "Unable to find encoder");
-    
+    av_log(NULL, AV_LOG_WARNING, "open output function called 4\n");
     // open video encoder
     // XXX use avoptions rather than manual enumeration
     if (!vc) {
+        av_log(NULL, AV_LOG_WARNING, "open output function called 5\n");
         vc = avcodec_alloc_context3(codec);
+        av_log(NULL, AV_LOG_WARNING, "open output function called 6\n");
         if (!vc) LPMS_ERR(open_output_err, "Unable to alloc video encoder");
         octx->vc = vc;
         vc->width = av_buffersink_get_w(octx->vf.sink_ctx);
@@ -462,7 +465,7 @@ int open_output1(struct output_ctx *octx, struct decode_meta *dmeta)
         }
         vc->pix_fmt = av_buffersink_get_format(octx->vf.sink_ctx); // XXX select based on encoder + input support
         if (fmt->flags & AVFMT_GLOBALHEADER) vc->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
-        av_log(NULL, AV_LOG_INFO, "Opening video encoder session for %dx%d fps %d/%d tb %d/%d bitrate %ld\n", vc->width, vc->height, vc->framerate.num, vc->framerate.den, vc->time_base.num, vc->time_base.den, (long) vc->bit_rate);
+        av_log(NULL, AV_LOG_WARNING, "Opening video encoder session for %dx%d fps %d/%d tb %d/%d bitrate %ld\n", vc->width, vc->height, vc->framerate.num, vc->framerate.den, vc->time_base.num, vc->time_base.den, (long) vc->bit_rate);
         clock_t t;
         t = clock();
         ret = avcodec_open2(vc, codec, &octx->video->opts);

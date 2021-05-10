@@ -61,8 +61,8 @@ type EncodeOptionsIn struct {
 	Device    string
 	DecHandle *C.struct_transcode_thread
 	// Ictx *C.struct_input_ctx
-	Dmeta     *C.struct_decode_meta
-	Pixels	  int64
+	Dmeta  *C.struct_decode_meta
+	Pixels int64
 }
 
 type TranscodeOptions struct {
@@ -494,7 +494,6 @@ func (t *Transcoder) StopTranscoder() {
 
 func Decode(input *TranscodeOptionsIn) (*DecodeResults, error) {
 	d := NewDecoder()
-	fmt.Println("decoder created")
 	defer d.StopDecoder()
 	return d.Decode(input)
 }
@@ -521,7 +520,6 @@ func (d *Decoder) StopDecoder() {
 
 func Encode(input *EncodeOptionsIn, ps []TranscodeOptions) (*TranscodeResults, error) {
 	e := NewEncoder()
-	fmt.Println("encoder created")
 	defer e.StopEncoder()
 	return e.Encode(input, ps)
 }

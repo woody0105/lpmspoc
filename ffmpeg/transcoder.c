@@ -366,6 +366,7 @@ int lpms_transcode(input_params *inp, output_params *params,
 }
 
 struct transcode_thread* lpms_transcode_new() {
+  printf("new transcoder created\n");
   struct transcode_thread *h = malloc(sizeof (struct transcode_thread));
   if (!h) return NULL;
   memset(h, 0, sizeof *h);
@@ -381,7 +382,9 @@ void lpms_transcode_stop(struct transcode_thread *handle) {
 
   free_input(&handle->ictx);
   for (i = 0; i < MAX_OUTPUT_SIZE; i++) {
-    free_output(&handle->outputs[i]);
+    if(&handle->outputs[i]) {
+      free_output(&handle->outputs[i]);
+    }
   }
 
   free(handle);
@@ -391,7 +394,6 @@ void lpms_transcode_stop(struct transcode_thread *handle) {
 int lpms_encode(input_params *inp, dframe_buffer *dframe_buffer, output_params *params,
   output_results *results, int nb_outputs, output_results *decoded_results, struct decode_meta *dmeta)
 {
-  printf("width %d\n", dmeta->v_width);
   int ret = 0, i = 0;
   struct transcode_thread *h = inp->handle;
   // struct transcode_thread *dec_handle = inp->dec_handle;
@@ -517,11 +519,11 @@ int lpms_encode1(input_params *inp, dframe_buffer *dframe_buffer, output_params 
 {
   int ret = 0, i = 0;
   struct transcode_thread *h = inp->handle;
-  // struct transcode_thread *dec_handle = inp->dec_handle;
   h->nb_outputs = nb_outputs;
   int reopen_decoders = 1;
-  // struct input_ctx *ictx = &h->ictx;
-  // printf("drop audio enc %d %x lastframe=%x\n", ictx->da, ictx->ic, ictx->last_frame_v);
+  
+  // printf("device=%s, initialized=%d\n", inp->device, inp->handle->initialized);
+  
   struct output_ctx *outputs = h->outputs;
   AVPacket ipkt = {0};
   // populate output contexts
@@ -544,6 +546,7 @@ int lpms_encode1(input_params *inp, dframe_buffer *dframe_buffer, output_params 
       // first segment of a stream, need to initalize output HW context
       // XXX valgrind this line up
       if (!h->initialized || AV_HWDEVICE_TYPE_NONE == octx->hw_type) {
+        printf("device=%s, initialized=%d\n", inp->device, inp->handle->initialized);
         ret = open_output1(octx, dmeta);
         if (ret < 0) LPMS_ERR(transcode_cleanup, "Unable to open output");
         continue;
@@ -627,7 +630,10 @@ transcode_cleanup:
   
   // free dframes
   for (int j=0; j < MAX_DFRAME_CNT; j++){
-    if (dframe_buffer->dframes[j].dec_frame) av_frame_free(&(dframe_buffer->dframes[j].dec_frame));
+    if (dframe_buffer->dframes[j].dec_frame) {
+      // printf("freeing dframes j=%d\n", j);
+      av_frame_free(&(dframe_buffer->dframes[j].dec_frame));
+    }
   }
   if (dframe_buffer->dframes){
     free(dframe_buffer->dframes);
@@ -637,7 +643,7 @@ transcode_cleanup:
   // ictx->pkt_diff = 0;
   // ictx->sentinel_count = 0;
   av_packet_unref(&ipkt);  // needed for early exits
-  if(dmeta->last_frame_v) av_frame_unref(dmeta->last_frame_v);
+  if(dmeta->last_frame_v) av_frame_free(&dmeta->last_frame_v);
   // if (ictx->first_pkt) av_packet_free(&ictx->first_pkt);
   // if (ictx->ac) avcodec_free_context(&ictx->ac);
   // if (ictx->vc && AV_HWDEVICE_TYPE_NONE == ictx->hw_type) avcodec_free_context(&ictx->vc);

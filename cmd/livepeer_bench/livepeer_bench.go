@@ -13,8 +13,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/livepeer/lpms/scheduler"
-
 	//"runtime/pprof"
 
 	"github.com/golang/glog"
@@ -48,8 +46,6 @@ func main() {
 	}
 
 	profiles := parseVideoProfiles(*transcodingOptions)
-	stateman := scheduler.NewStateManager(3)
-	fmt.Println(stateman.SesCount)
 	f, err := os.Open(*in)
 	if err != nil {
 		glog.Fatal("Couldn't open input manifest: ", err)
